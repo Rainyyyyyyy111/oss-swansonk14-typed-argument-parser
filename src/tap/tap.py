@@ -20,13 +20,13 @@ from typing import (
     TypeVar,
     Union,
     get_args,
-    get_type_hints,
 )
 
 from tap.utils import (
     GitInfo,
     PathLike,
     TupleTypeEnforcer,
+    _get_class_type_hints,
     _is_marked_positional,
     _is_marked_tap_ignore,
     as_python_object,
@@ -593,7 +593,7 @@ class Tap(ArgumentParser):
         Keep Annotations and other extras if include_extras is True.
         """
         return self._get_from_self_and_super(
-            extract_func=lambda super_class: dict(get_type_hints(super_class, include_extras=include_extras))
+            extract_func=lambda super_class: _get_class_type_hints(super_class, include_extras=include_extras)
         )
 
     def _get_class_variables(self, exclude_tap_ignores: bool = True) -> dict:

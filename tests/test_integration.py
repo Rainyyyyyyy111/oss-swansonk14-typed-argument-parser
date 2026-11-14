@@ -1149,6 +1149,17 @@ class SetTests(TestCase):
         self.assertEqual(args.set_2, 3.7)
 
 
+class Dummy:
+    def __init__(self, x):
+        self.x = x
+
+    def __eq__(self, other: "Dummy"):
+        return isinstance(other, type(self)) and self.x == other.x
+
+    def __str__(self):
+        return f"Dummy({self.x})"
+
+
 class TupleTests(TestCase):
     def test_tuple_empty(self):
         tup_arg = ("three", "four", "ten")
@@ -1227,16 +1238,6 @@ class TupleTests(TestCase):
         self.assertEqual(args.tup_bool, arg_bool_true)
 
     def test_tuple_class(self):
-        class Dummy:
-            def __init__(self, x):
-                self.x = x
-
-            def __eq__(self, other: "Dummy"):
-                return isinstance(other, type(self)) and self.x == other.x
-
-            def __str__(self):
-                return f"Dummy({self.x})"
-
         class TupleClassTap(Tap):
             tup: Tuple[int, str, Dummy, Dummy]
 

@@ -4,6 +4,7 @@ import os
 import pickle
 import re
 import subprocess
+import sys
 import textwrap
 import tokenize
 import typing
@@ -12,7 +13,7 @@ from argparse import ArgumentParser, ArgumentTypeError
 from base64 import b64decode, b64encode
 from io import StringIO
 from json import JSONEncoder
-from types import GenericAlias
+from types import GenericAlias, SimpleNamespace
 from typing import (
     Annotated,
     Any,
@@ -32,6 +33,30 @@ TYPING_GENERIC_ALIAS = (_GenericAlias, _SpecialGenericAlias, GenericAlias)
 NO_CHANGES_STATUS = """nothing to commit, working tree clean"""
 PRIMITIVES = (str, int, float, bool)
 PathLike = str | os.PathLike
+
+
+def _get_class_type_hints(cls: type, include_extras: bool = False, names: Optional[set[str]] = None) -> dict[str, Any]:
+    """Resolve class annotations in each defining scope, including Tap's bare Optional/Union types."""
+    hints = {}
+    for base in reversed(cls.__mro__):
+        globalns = getattr(sys.modules.get(base.__module__), "__dict__", {})
+        localns = dict(vars(base))
+        annotations = {
+            name: eval(annotation, globalns, localns) if isinstance(annotation, str) else annotation
+            for name, annotation in inspect.get_annotations(base).items()
+            if names is None or name in names
+        }
+        # Evaluate postponed strings before get_type_hints: bare Optional and Union are valid
+        # Tap annotations, but typing rejects them when evaluating a ForwardRef.
+        hints.update(
+            typing.get_type_hints(
+                SimpleNamespace(__annotations__=annotations),
+                globalns=globalns,
+                localns=localns,
+                include_extras=include_extras,
+            )
+        )
+    return hints
 
 
 def check_output(command: list[str], suppress_stderr: bool = True, **kwargs) -> str:

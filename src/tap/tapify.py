@@ -17,7 +17,7 @@ from typing import Any, Callable, Optional, Sequence, TypeVar, _AnnotatedAlias, 
 
 from docstring_parser import Docstring, parse
 
-from tap.utils import _is_marked_tap_ignore, _TapIgnoreMarker
+from tap.utils import _get_class_type_hints, _is_marked_tap_ignore, _TapIgnoreMarker
 
 try:
     import pydantic
@@ -128,13 +128,14 @@ def _tap_data_from_data_model(
             return field.default is dataclasses.MISSING and field.default_factory is dataclasses.MISSING
 
         description = param_to_description.get(name, field.metadata.get("description"))
+        annotation = type_hints[name]
         return _ArgData(
             name,
-            field.type,
+            annotation,
             is_required(field),
             field.default,
             description,
-            ignored=_is_marked_tap_ignore(field.type),
+            ignored=_is_marked_tap_ignore(annotation),
         )
 
     def arg_data_from_pydantic(name: str, field: _PydanticField, annotation: Optional[type] = None) -> _ArgData:  # pyright: ignore[reportInvalidTypeForm]
@@ -155,6 +156,8 @@ def _tap_data_from_data_model(
     # Determine what type of data model it is and extract fields accordingly
     if dataclasses.is_dataclass(data_model):
         name_to_field = {field.name: field for field in dataclasses.fields(data_model)}
+        model_class = data_model if inspect.isclass(data_model) else type(data_model)
+        type_hints = _get_class_type_hints(model_class, include_extras=True, names=set(name_to_field))
         has_kwargs = False
         known_only = False
     elif _is_pydantic_base_model(data_model):
@@ -181,7 +184,7 @@ def _tap_data_from_data_model(
             # object instead of the field's default value. Furthermore, field.annotation is always NoneType. Luckily,
             # the actual type of the field is stored in field.type
             if isinstance(field.default, _PYDANTIC_FIELD_TYPES):
-                arg_data = arg_data_from_pydantic(name, field.default, annotation=field.type)
+                arg_data = arg_data_from_pydantic(name, field.default, annotation=type_hints[name])
             else:
                 arg_data = arg_data_from_dataclass(name, field)
         elif isinstance(field, _PYDANTIC_FIELD_TYPES):
@@ -214,29 +217,39 @@ def _tap_data_from_class_or_function(
 
     sig = inspect.signature(class_or_function)
 
-    annotation_source = class_or_function.__init__ if inspect.isclass(class_or_function) else class_or_function
+    annotation_source = class_or_function
     while isinstance(annotation_source, partial):
         annotation_source = annotation_source.func
+    localns = None
+    if inspect.isclass(annotation_source):
+        target_class = annotation_source
+        annotation_source = target_class.__init__
+        # An inherited constructor's aliases belong to its defining class, not the subclass.
+        owner = next(base for base in target_class.__mro__ if "__init__" in vars(base))
+        localns = dict(vars(owner))
     annotation_source = inspect.unwrap(annotation_source)
     code = getattr(annotation_source, "__code__", None)
+    is_pydantic_v1_dataclass_class = (
+        _IS_PYDANTIC_V1 and _is_pydantic_dataclass(class_or_function) and inspect.isclass(class_or_function)
+    )
+
     type_hints = {}
-    if code is not None and code.co_flags & __future__.annotations.compiler_flag:
+    if is_pydantic_v1_dataclass_class:
+        # Pydantic v1's generated initializer does not retain the future-annotations flag.
+        type_hints = _get_class_type_hints(class_or_function, include_extras=True, names=set(sig.parameters))
+    elif code is not None and code.co_flags & __future__.annotations.compiler_flag:
         # Resolve only CLI parameters: return types and **kwargs do not define arguments.
         annotations = {
-            name: param.annotation
+            name: eval(param.annotation, annotation_source.__globals__, localns)
             for name, param in sig.parameters.items()
             if isinstance(param.annotation, str) and param.kind != inspect.Parameter.VAR_KEYWORD
         }
         type_hints = get_type_hints(
             SimpleNamespace(__annotations__=annotations),
             globalns=annotation_source.__globals__,
-            localns=vars(class_or_function) if inspect.isclass(class_or_function) else None,
+            localns=localns,
             include_extras=True,
         )
-
-    is_pydantic_v1_dataclass_class = (
-        _IS_PYDANTIC_V1 and _is_pydantic_dataclass(class_or_function) and inspect.isclass(class_or_function)
-    )
 
     for idx, (param_name, param) in enumerate(sig.parameters.items()):
         if (
